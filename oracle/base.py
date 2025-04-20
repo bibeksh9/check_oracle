@@ -199,8 +199,10 @@ class BaseOracleSaver(BaseCheckpointSaver[str]):
         values: dict[str, Any],
         versions: ChannelVersions,
     ) -> list[tuple[str, str, str, str, str, Optional[bytes]]]:
+        
         if not versions:
-            return []
+            value = ("empty", None)
+            return [(thread_id,checkpoint_ns, 'empty', 'empty',  *self.serde.dumps_typed(value))]
 
         if not checkpoint_ns:
             checkpoint_ns = "default"

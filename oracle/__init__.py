@@ -173,7 +173,11 @@ class OracleSaver(BaseOracleSaver):
             )
             except oracledb.DatabaseError as e:
                 return
-            for value in cur:
+            columns = [col[0].lower() for col in cur.description]
+            values = cur.fetchall()
+            
+            data_list = [dict(zip(columns,val)) for val in values]
+            for value in data_list:
                 checkpoint = self._load_checkpoint(
                     value["checkpoint"],
                     value["channel_values"],

@@ -16,7 +16,7 @@ from oracledb import (
     create_pipeline as AsyncPipeline  # Fix: Import AsyncPipeline
 )
 
-from checkpoint.oracle import _ainternal, _internal
+from . import _ainternal, _internal
 from .oracle_types import DictRow, dict_row, Capabilities, Jsonb
 
 from langgraph.checkpoint.base import (
