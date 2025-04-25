@@ -187,7 +187,7 @@ class BaseOracleSaver(BaseCheckpointSaver[str]):
         if not blob_values:
             return {}
         return {
-            k.decode(): self.serde.loads_typed((t.decode(), v))
+            k.decode(): self.serde.loads_typed((t.decode(), v.tobytes() if hasattr(v, 'tobytes') else v))
             for k, t, v in blob_values
             if t.decode() != "empty"
         }

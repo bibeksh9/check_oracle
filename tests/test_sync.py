@@ -34,7 +34,7 @@ def _pool_saver():
     )
     try:
         checkpointer = OracleSaver(pool)
-        checkpointer.setup()
+        # checkpointer.setup()
         yield checkpointer
     finally:
         pool.close()
@@ -66,7 +66,7 @@ def _shallow_saver():
     conn.autocommit = True
     try:
         checkpointer = ShallowOracleSaver(conn)
-        checkpointer.setup()
+        # checkpointer.setup()
         yield checkpointer
     finally:
         conn.close()

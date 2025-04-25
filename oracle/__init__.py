@@ -168,16 +168,29 @@ class OracleSaver(BaseOracleSaver):
         with self._cursor() as cur:
             try:
                 cur.execute(
-                self.SELECT_SQL + where,
-                args,
-            )
-            except oracledb.DatabaseError as e:
-                return
+                    self.SELECT_SQL + where,
+                    args,
+                )
+            except oracledb.DatabaseError:
+                return None
+                
             columns = [col[0].lower() for col in cur.description]
             values = cur.fetchall()
             
             data_list = [dict(zip(columns,val)) for val in values]
             for value in data_list:
+                # Convert LOB objects to Python types
+                if value["checkpoint"] and isinstance(value["checkpoint"], oracledb.LOB):
+                    value["checkpoint"] = json.loads(value["checkpoint"].read())
+                if value["channel_values"] and isinstance(value["channel_values"], oracledb.LOB):
+                    value["channel_values"] = json.loads(value["channel_values"].read())
+                if value["pending_sends"] and isinstance(value["pending_sends"], oracledb.LOB):
+                    value["pending_sends"] = json.loads(value["pending_sends"].read())
+                if value["metadata"] and isinstance(value["metadata"], oracledb.LOB):
+                    value["metadata"] = json.loads(value["metadata"].read())
+                if value["pending_writes"] and isinstance(value["pending_writes"], oracledb.LOB):
+                    value["pending_writes"] = json.loads(value["pending_writes"].read())
+                
                 checkpoint = self._load_checkpoint(
                     value["checkpoint"],
                     value["channel_values"],
