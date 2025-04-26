@@ -34,7 +34,7 @@ def _pool_saver():
     )
     try:
         checkpointer = OracleSaver(pool)
-        # checkpointer.setup()
+        checkpointer.setup()
         yield checkpointer
     finally:
         pool.close()
@@ -50,7 +50,7 @@ def _base_saver():
     conn.autocommit = True
     try:
         checkpointer = OracleSaver(conn)
-        # checkpointer.setup()
+        checkpointer.setup()
         yield checkpointer
     finally:
         conn.close()
@@ -66,7 +66,7 @@ def _shallow_saver():
     conn.autocommit = True
     try:
         checkpointer = ShallowOracleSaver(conn)
-        # checkpointer.setup()
+        checkpointer.setup()
         yield checkpointer
     finally:
         conn.close()
@@ -137,7 +137,7 @@ def test_combined_metadata(saver_name: str, test_data) -> None:
     with _saver(saver_name) as saver:
         config = {
             "configurable": {
-                "thread_id": "thread-2",
+                "thread_id": "thread-pool",
                 "checkpoint_ns": "oracle",
                 "__super_private_key": "super_private_value",
             },
@@ -154,7 +154,7 @@ def test_combined_metadata(saver_name: str, test_data) -> None:
         checkpoint = saver.get_tuple(config)
         assert checkpoint.metadata == {
             **metadata,
-            "thread_id": "thread-2",
+            "thread_id": "thread-pool",
             "run_id": "my_run_id",
         }
 

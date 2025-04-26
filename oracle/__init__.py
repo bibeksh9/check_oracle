@@ -70,8 +70,11 @@ class OracleSaver(BaseOracleSaver):
                 range(version + 1, len(self.MIGRATIONS)),
                 self.MIGRATIONS[version + 1 :],
             ):
-                cur.execute(migration)
-                cur.execute(f"INSERT INTO checkpoint_migrations (v) VALUES ({v})")
+                try:
+                    cur.execute(migration)
+                    cur.execute(f"INSERT INTO checkpoint_migrations (v) VALUES ({v})")
+                except oracledb.DatabaseError as e:
+                    pass
 
     def list(
         self,
@@ -120,7 +123,11 @@ class OracleSaver(BaseOracleSaver):
         # if we change this to use .stream() we need to make sure to close the cursor
         with self._cursor() as cur:
             cur.execute(query, args)
-            for value in cur:
+            columns = [col[0].lower() for col in cur.description]
+            rows = cur.fetchall()
+            values=[tuple([json.loads(val.read()) if isinstance(val, oracledb.LOB) else val for row in rows  for val in row])]
+            data_list = [dict(zip(columns, tu)) if values else {} for tu in values] 
+            for value in data_list:
                 yield CheckpointTuple(
                     {
                         "configurable": {
@@ -153,17 +160,17 @@ class OracleSaver(BaseOracleSaver):
         thread_id = config["configurable"]["thread_id"]
         checkpoint_id = get_checkpoint_id(config)
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
-
+    
         if checkpoint_id:
-            args = {
-                "thread_id": thread_id,
-                "checkpoint_ns": checkpoint_ns,
-                "checkpoint_id": checkpoint_id,
-            }
-            where = "WHERE thread_id = :thread_id AND checkpoint_ns = :checkpoint_ns AND checkpoint_id = :checkpoint_id"
+            args = (
+                 thread_id,
+                 checkpoint_ns,
+                 checkpoint_id
+            )
+            where = "WHERE thread_id = :1 AND checkpoint_ns = :2 AND checkpoint_id = :3"
         else:
-            args = {"thread_id": thread_id, "checkpoint_ns": checkpoint_ns}
-            where = "WHERE thread_id = :thread_id AND checkpoint_ns = :checkpoint_ns ORDER BY checkpoint_id DESC FETCH FIRST 1 ROW ONLY"
+            args = (thread_id,checkpoint_ns)
+            where = "WHERE thread_id = :1 AND checkpoint_ns = :2 ORDER BY checkpoint_id DESC FETCH FIRST 1 ROW ONLY"
 
         with self._cursor() as cur:
             try:
@@ -171,26 +178,18 @@ class OracleSaver(BaseOracleSaver):
                     self.SELECT_SQL + where,
                     args,
                 )
-            except oracledb.DatabaseError:
+            except oracledb.DatabaseError as e:
+                print(f"Error executing query: {e}")
                 return None
                 
             columns = [col[0].lower() for col in cur.description]
-            values = cur.fetchall()
-            
-            data_list = [dict(zip(columns,val)) for val in values]
+            rows = cur.fetchall()
+            values=[tuple([json.loads(val.read()) if isinstance(val, oracledb.LOB) else val for row in rows  for val in row])]
+            data_list=[]
+            if len(values[0]) > 0:
+                data_list = [dict(zip(columns, tu))  for tu in values ]
             for value in data_list:
                 # Convert LOB objects to Python types
-                if value["checkpoint"] and isinstance(value["checkpoint"], oracledb.LOB):
-                    value["checkpoint"] = json.loads(value["checkpoint"].read())
-                if value["channel_values"] and isinstance(value["channel_values"], oracledb.LOB):
-                    value["channel_values"] = json.loads(value["channel_values"].read())
-                if value["pending_sends"] and isinstance(value["pending_sends"], oracledb.LOB):
-                    value["pending_sends"] = json.loads(value["pending_sends"].read())
-                if value["metadata"] and isinstance(value["metadata"], oracledb.LOB):
-                    value["metadata"] = json.loads(value["metadata"].read())
-                if value["pending_writes"] and isinstance(value["pending_writes"], oracledb.LOB):
-                    value["pending_writes"] = json.loads(value["pending_writes"].read())
-                
                 checkpoint = self._load_checkpoint(
                     value["checkpoint"],
                     value["channel_values"],

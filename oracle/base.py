@@ -45,20 +45,21 @@ MIGRATIONS = [
         PRIMARY KEY (thread_id, checkpoint_ns, channel, version)
     )""",
     """CREATE TABLE IF NOT EXISTS checkpoint_writes (
-        thread_id VARCHAR2(200) NOT NULL,
-        checkpoint_ns VARCHAR2(200) DEFAULT '',
-        checkpoint_id VARCHAR2(200) NOT NULL,
-        task_id VARCHAR2(200) NOT NULL,
-        idx NUMBER NOT NULL,
-        channel VARCHAR2(200) NOT NULL,
-        type VARCHAR2(200),
-        blob BLOB NOT NULL,
-        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
-    )""",
-    """CREATE INDEX checkpoints_thread_id_idx ON checkpoints(thread_id)""",
-    """CREATE INDEX checkpoint_blobs_thread_id_idx ON checkpoint_blobs(thread_id)""",
-    """CREATE INDEX checkpoint_writes_thread_id_idx ON checkpoint_writes(thread_id)""",
-    """ALTER TABLE checkpoint_writes ADD task_path VARCHAR2(1000) DEFAULT ''"""
+    thread_id VARCHAR2(255) NOT NULL,
+    checkpoint_ns VARCHAR2(255) DEFAULT '',
+    checkpoint_id VARCHAR2(255) NOT NULL,
+    task_id VARCHAR2(255) NOT NULL,
+    task_path VARCHAR2(255) DEFAULT '',
+    idx NUMBER NOT NULL,
+    channel VARCHAR2(255) NOT NULL,
+    type VARCHAR2(255),
+    blob BLOB NOT NULL,
+    CONSTRAINT pk_checkpoint_writes PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+)""",
+    """CREATE INDEX IF NOT EXISTS checkpoints_thread_id_idx ON checkpoints(thread_id)""",
+    """CREATE INDEX IF NOT EXISTS checkpoint_blobs_thread_id_idx ON checkpoint_blobs(thread_id)""",
+    """CREATE INDEX IF NOT EXISTS checkpoint_writes_thread_id_idx ON checkpoint_writes(thread_id)""",
+    """ALTER TABLE IF NOT EXISTS checkpoint_writes ADD task_path VARCHAR2(1000) DEFAULT ''"""
 ]
 
 SELECT_SQL = f"""
@@ -110,16 +111,40 @@ FROM checkpoints c
 """
 
 
-UPSERT_CHECKPOINT_BLOBS_SQL = """
-    MERGE INTO checkpoint_blobs b
-    USING (SELECT :1 AS thread_id, :2 AS checkpoint_ns, :3 AS channel, :4 AS version, :5 AS type, :6 AS blob FROM dual) src
-    ON (b.thread_id = src.thread_id AND b.checkpoint_ns = src.checkpoint_ns AND b.channel = src.channel AND b.version = src.version)
-    WHEN MATCHED THEN
-        UPDATE SET type = src.type, blob = src.blob
-    WHEN NOT MATCHED THEN
-        INSERT (thread_id, checkpoint_ns, channel, version, type, blob)
-        VALUES (src.thread_id, src.checkpoint_ns, src.channel, src.version, src.type, src.blob)
-"""
+UPSERT_CHECKPOINT_BLOBS_SQL = """MERGE INTO checkpoint_blobs dst
+USING (
+    SELECT
+        :1      AS thread_id,
+        :2  AS checkpoint_ns,
+        :3        AS channel,
+        :4        AS version,
+        :5           AS type,
+        :6           AS bl
+    FROM DUAL
+) src
+ON (
+    dst.thread_id       = src.thread_id
+    AND dst.checkpoint_ns = src.checkpoint_ns
+    AND dst.channel        = src.channel
+    AND dst.version        = src.version
+)
+WHEN NOT MATCHED THEN
+  INSERT (
+    thread_id,
+    checkpoint_ns,
+    channel,
+    version,
+    type,
+    blob
+  )
+  VALUES (
+    src.thread_id,
+    src.checkpoint_ns,
+    src.channel,
+    src.version,
+    src.type,
+    src.bl
+  )"""
 
 
 UPSERT_CHECKPOINTS_SQL = """
@@ -186,10 +211,11 @@ class BaseOracleSaver(BaseCheckpointSaver[str]):
     ) -> dict[str, Any]:
         if not blob_values:
             return {}
+        print("blob_values", blob_values)
         return {
-            k.decode(): self.serde.loads_typed((t.decode(), v.tobytes() if hasattr(v, 'tobytes') else v))
-            for k, t, v in blob_values
-            if t.decode() != "empty"
+            k: self.serde.loads_typed((t, v.encode()))
+            for k, t, v in [(blob_values.split(','))]
+            if t != "empty"
         }
 
     def _dump_blobs(
@@ -202,6 +228,7 @@ class BaseOracleSaver(BaseCheckpointSaver[str]):
         
         if not versions:
             value = ("empty", None)
+            print("value", [(thread_id,checkpoint_ns, 'empty', 'empty',  *self.serde.dumps_typed(value))])
             return [(thread_id,checkpoint_ns, 'empty', 'empty',  *self.serde.dumps_typed(value))]
 
         if not checkpoint_ns:
@@ -284,45 +311,41 @@ class BaseOracleSaver(BaseCheckpointSaver[str]):
         return f"{next_v:032}.{next_h:016}"
 
     def _search_where(
-        self,
-        config: Optional[RunnableConfig],
-        filter: MetadataInput,
-        before: Optional[RunnableConfig] = None,
-    ) -> tuple[str, list[Any]]:
-        """Return WHERE clause predicates for alist() given config, filter, before.
-
-        This method returns a tuple of a string and a tuple of values. The string
-        is the parametered WHERE clause predicate (including the WHERE keyword):
-        "WHERE column1 = $1 AND column2 IS $2". The list of values contains the
-        values for each of the corresponding parameters.
-        """
+    self,
+    config: Optional[RunnableConfig],
+    filter: MetadataInput,
+    before: Optional[RunnableConfig] = None,
+) -> tuple[str, list[Any]]:
         wheres = []
         param_values = []
 
         # construct predicate for config filter
         if config:
-            wheres.append("thread_id = %s ")
+            wheres.append("thread_id = :{}".format(len(param_values) + 1))
             param_values.append(config["configurable"]["thread_id"])
             checkpoint_ns = config["configurable"].get("checkpoint_ns")
             if checkpoint_ns is not None:
-                wheres.append("checkpoint_ns = %s")
+                wheres.append("checkpoint_ns = :{}".format(len(param_values) + 1))
                 param_values.append(checkpoint_ns)
 
             if checkpoint_id := get_checkpoint_id(config):
-                wheres.append("checkpoint_id = %s ")
+                wheres.append("checkpoint_id = :{}".format(len(param_values) + 1))
                 param_values.append(checkpoint_id)
 
         # construct predicate for metadata filter
         if filter:
-            wheres.append("metadata @> %s ")
-            param_values.append(filter)
+            for key, value in filter.items():
+                wheres.append(f"JSON_EXISTS(metadata, '$?(@.{key} == \"{value}\")')")
+                # In Oracle, JSON_EXISTS works directly inside the string, no param binding needed usually
+                # If you want to use bind variables, it will be more complex (and need JSON_EXISTS with variables)
 
         # construct predicate for `before`
         if before is not None:
-            wheres.append("checkpoint_id < %s ")
+            wheres.append("checkpoint_id < :{}".format(len(param_values) + 1))
             param_values.append(get_checkpoint_id(before))
 
         return (
             "WHERE " + " AND ".join(wheres) if wheres else "",
             param_values,
         )
+

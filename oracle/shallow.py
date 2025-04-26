@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 from collections.abc import AsyncIterator, Iterator, Sequence
 from contextlib import asynccontextmanager, contextmanager
@@ -15,6 +16,7 @@ from oracledb import (
     AsyncCursor,
     create_pipeline as AsyncPipeline  # Fix: Import AsyncPipeline
 )
+import oracledb
 
 from . import _ainternal, _internal
 from .oracle_types import DictRow, dict_row, Capabilities, Jsonb
@@ -36,26 +38,29 @@ To add a new migration, add a new string to the MIGRATIONS list.
 The position of the migration in the list is the version number.
 """
 MIGRATIONS = [
-    """CREATE TABLE checkpoint_migrations (
+    """CREATE TABLE IF NOT EXISTS checkpoint_migrations (
     v NUMBER PRIMARY KEY
 )""",
-    """CREATE TABLE checkpoints (
-    thread_id VARCHAR2(255) NOT NULL,
-    checkpoint_ns VARCHAR2(255) DEFAULT '',
-    checkpoint_id VARCHAR2(255) NOT NULL,
-    checkpoint CLOB NOT NULL,
-    metadata CLOB DEFAULT '{}',
-    CONSTRAINT pk_checkpoints PRIMARY KEY (thread_id, checkpoint_ns)
-)""",
-    """CREATE TABLE checkpoint_blobs (
-    thread_id VARCHAR2(255) NOT NULL,
-    checkpoint_ns VARCHAR2(255) DEFAULT '',
-    channel VARCHAR2(255) NOT NULL,
-    type VARCHAR2(255) NOT NULL,
-    blob BLOB,
-    CONSTRAINT pk_checkpoint_blobs PRIMARY KEY (thread_id, checkpoint_ns, channel)
-)""",
-    """CREATE TABLE checkpoint_writes (
+    """CREATE TABLE IF NOT EXISTS checkpoints (
+        thread_id VARCHAR2(200) NOT NULL,
+        checkpoint_ns VARCHAR2(200) DEFAULT '',
+        checkpoint_id VARCHAR2(200) NOT NULL,
+        parent_checkpoint_id VARCHAR2(200),
+        type VARCHAR2(200),
+        checkpoint CLOB NOT NULL,
+        metadata CLOB DEFAULT '{}',
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS checkpoint_blobs (
+        thread_id VARCHAR2(200) NOT NULL, 
+        checkpoint_ns VARCHAR2(200) DEFAULT '',
+        channel VARCHAR2(200) NOT NULL,
+        version VARCHAR2(200) NOT NULL,
+        type VARCHAR2(200) NOT NULL,
+        blob BLOB,
+        PRIMARY KEY (thread_id, checkpoint_ns, channel, version)
+    )""",
+    """CREATE TABLE IF NOT EXISTS checkpoint_writes (
     thread_id VARCHAR2(255) NOT NULL,
     checkpoint_ns VARCHAR2(255) DEFAULT '',
     checkpoint_id VARCHAR2(255) NOT NULL,
@@ -67,9 +72,9 @@ MIGRATIONS = [
     blob BLOB NOT NULL,
     CONSTRAINT pk_checkpoint_writes PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
 )""",
-    """CREATE INDEX idx_checkpoints_thread_id ON checkpoints(thread_id)""",
-    """CREATE INDEX idx_checkpoint_blobs_thread_id ON checkpoint_blobs(thread_id)""",
-    """CREATE INDEX idx_checkpoint_writes_thread_id ON checkpoint_writes(thread_id)"""
+    """CREATE INDEX IF NOT EXISTS idx_checkpoints_thread_id ON checkpoints(thread_id)""",
+    """CREATE INDEX IF NOT EXISTS idx_checkpoint_blobs_thread_id ON checkpoint_blobs(thread_id)""",
+    """CREATE INDEX IF NOT EXISTS idx_checkpoint_writes_thread_id ON checkpoint_writes(thread_id)"""
 ]
 
 SELECT_SQL = """
@@ -107,16 +112,40 @@ SELECT
 FROM checkpoints c
 """
 
-UPSERT_CHECKPOINT_BLOBS_SQL = """
-MERGE INTO checkpoint_blobs dst
-USING (SELECT :1 as thread_id, :2 as checkpoint_ns, :3 as channel, :4 as type, :5 as blob FROM dual) src
-ON (dst.thread_id = src.thread_id AND dst.checkpoint_ns = src.checkpoint_ns AND dst.channel = src.channel)
-WHEN MATCHED THEN
-    UPDATE SET type = src.type, blob = src.blob
+UPSERT_CHECKPOINT_BLOBS_SQL = """MERGE INTO checkpoint_blobs dst
+USING (
+    SELECT
+        :1      AS thread_id,
+        :2  AS checkpoint_ns,
+        :3        AS channel,
+        :4        AS version,
+        :5           AS type,
+        :6           AS bl
+    FROM DUAL
+) src
+ON (
+    dst.thread_id       = src.thread_id
+    AND dst.checkpoint_ns = src.checkpoint_ns
+    AND dst.channel        = src.channel
+    AND dst.version        = src.version
+)
 WHEN NOT MATCHED THEN
-    INSERT (thread_id, checkpoint_ns, channel, type, blob)
-    VALUES (src.thread_id, src.checkpoint_ns, src.channel, src.type, src.blob)
-"""
+  INSERT (
+    thread_id,
+    checkpoint_ns,
+    channel,
+    version,
+    type,
+    blob
+  )
+  VALUES (
+    src.thread_id,
+    src.checkpoint_ns,
+    src.channel,
+    src.version,
+    src.type,
+    src.bl
+  )"""
 
 UPSERT_CHECKPOINTS_SQL = """
 MERGE INTO checkpoints dst
@@ -156,7 +185,8 @@ def _dump_blobs(
     versions: ChannelVersions,
 ) -> list[tuple[str, str, str, str, str, Optional[bytes]]]:
     if not versions:
-        return []
+        value = ("empty", 'empty')
+        return [(thread_id,checkpoint_ns, 'empty','empty', *serde.dumps_typed(value))]
     if not checkpoint_ns:
         checkpoint_ns = ""
     return [
@@ -323,16 +353,28 @@ class ShallowOracleSaver(BaseOracleSaver):
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
         args = (thread_id, checkpoint_ns)
-        where = "WHERE thread_id = %s AND checkpoint_ns = %s"
+        where = "WHERE thread_id = :1 AND checkpoint_ns = :2"
 
         with self._cursor() as cur:
             cur.execute(
                 self.SELECT_SQL + where,
-                args,
-                binary=True,
+                args
             )
-
-            for value in cur:
+            columns = [col[0].lower() for col in cur.description]
+            values = cur.fetchall()
+            data_list = [dict(zip(columns,val)) for val in values]
+            for value in data_list:
+                if value["checkpoint"] and isinstance(value["checkpoint"], oracledb.LOB):
+                    value["checkpoint"] = json.loads(value["checkpoint"].read())
+                if value["channel_values"] and isinstance(value["channel_values"], oracledb.LOB):
+                    value["channel_values"] = json.loads(value["channel_values"].read())
+                if value["pending_sends"] and isinstance(value["pending_sends"], oracledb.LOB):
+                    value["pending_sends"] = json.loads(value["pending_sends"].read())
+                if value["metadata"] and isinstance(value["metadata"], oracledb.LOB):
+                    value["metadata"] = json.loads(value["metadata"].read())
+                if value["pending_writes"] and isinstance(value["pending_writes"], oracledb.LOB):
+                    value["pending_writes"] = json.loads(value["pending_writes"].read())
+                    
                 checkpoint = self._load_checkpoint(
                     value["checkpoint"],
                     value["channel_values"],
@@ -397,10 +439,10 @@ class ShallowOracleSaver(BaseOracleSaver):
             }
         }
 
-        with self._cursor(pipeline=True) as cur:
+        with self._cursor() as cur:
             cur.execute(
                 """DELETE FROM checkpoint_writes
-                WHERE thread_id = %s AND checkpoint_ns = %s AND checkpoint_id NOT IN (%s, %s)""",
+                WHERE thread_id = :1 AND checkpoint_ns = :2 AND checkpoint_id NOT IN (:3, :4)""",
                 (
                     thread_id,
                     checkpoint_ns,
@@ -423,7 +465,8 @@ class ShallowOracleSaver(BaseOracleSaver):
                 (
                     thread_id,
                     checkpoint_ns,
-                    Jsonb(self._dump_checkpoint(copy)),
+                    checkpoint["id"],
+                    json.dumps(self._dump_checkpoint(copy)),
                     self._dump_metadata(get_checkpoint_metadata(config, metadata)),
                 ),
             )
@@ -478,7 +521,7 @@ class ShallowOracleSaver(BaseOracleSaver):
                 # in multiple threads/coroutines, but only one cursor can be
                 # used at a time
                 try:
-                    with conn.cursor(binary=True, row_factory=dict_row) as cur:
+                    with conn.cursor() as cur:
                         yield cur
                 finally:
                     if pipeline:
@@ -490,7 +533,7 @@ class ShallowOracleSaver(BaseOracleSaver):
                     with (
                         self.lock,
                         conn.pipeline(),
-                        conn.cursor(binary=True, row_factory=dict_row) as cur,
+                        conn.cursor() as cur,
                     ):
                         yield cur
                 else:
@@ -498,11 +541,11 @@ class ShallowOracleSaver(BaseOracleSaver):
                     with (
                         self.lock,
                         conn.transaction(),
-                        conn.cursor(binary=True, row_factory=dict_row) as cur,
+                        conn.cursor() as cur,
                     ):
                         yield cur
             else:
-                with self.lock, conn.cursor(binary=True, row_factory=dict_row) as cur:
+                with self.lock, conn.cursor() as cur:
                     yield cur
 
 
@@ -650,13 +693,12 @@ class AsyncShallowOracleSaver(BaseOracleSaver):
         thread_id = config["configurable"]["thread_id"]
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
         args = (thread_id, checkpoint_ns)
-        where = "WHERE thread_id = %s AND checkpoint_ns = %s"
+        where = "WHERE thread_id = :1 AND checkpoint_ns = :2"
 
         async with self._cursor() as cur:
             await cur.execute(
                 self.SELECT_SQL + where,
-                args,
-                binary=True,
+                args
             )
 
             async for value in cur:
@@ -719,7 +761,7 @@ class AsyncShallowOracleSaver(BaseOracleSaver):
         async with self._cursor(pipeline=True) as cur:
             await cur.execute(
                 """DELETE FROM checkpoint_writes
-                WHERE thread_id = %s AND checkpoint_ns = %s AND checkpoint_id NOT IN (%s, %s)""",
+                WHERE thread_id = :1 AND checkpoint_ns = :2 AND checkpoint_id NOT IN (:3, :4)""",
                 (
                     thread_id,
                     checkpoint_ns,
