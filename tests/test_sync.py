@@ -24,14 +24,12 @@ def _exclude_keys(config: dict[str, Any]) -> dict[str, Any]:
 @contextmanager 
 def _pool_saver():
     """Fixture for pool mode testing."""
-    pool = SessionPool(
+    pool = oracledb.connect(
         user=DEFAULT_ORACLE_CONFIG["user"],
         password=DEFAULT_ORACLE_CONFIG["password"],
-        dsn=f"{DEFAULT_ORACLE_CONFIG['host']}:{DEFAULT_ORACLE_CONFIG['port']}/{DEFAULT_ORACLE_CONFIG['service_name']}",
-        min=1,
-        max=10,
-        increment=1
+        dsn=f"{DEFAULT_ORACLE_CONFIG['host']}:{DEFAULT_ORACLE_CONFIG['port']}/{DEFAULT_ORACLE_CONFIG['service_name']}"
     )
+    pool.autocommit = True
     try:
         checkpointer = OracleSaver(pool)
         checkpointer.setup()
@@ -90,14 +88,14 @@ def test_data():
         "configurable": {
             "thread_id": "thread-1",
             "thread_ts": "1",
-            "checkpoint_ns": "",
+            "checkpoint_ns": "oracle",
         }
     }
     config_2: RunnableConfig = {
         "configurable": {
             "thread_id": "thread-2", 
             "checkpoint_id": "2",
-            "checkpoint_ns": "",
+            "checkpoint_ns": "oracle",
         }
     }
     config_3: RunnableConfig = {
@@ -202,7 +200,7 @@ def test_search(saver_name: str, test_data) -> None:
         assert {
             search_results_5[0].config["configurable"]["checkpoint_ns"],
             search_results_5[1].config["configurable"]["checkpoint_ns"],
-        } == {"", "inner"}
+        } == {"oracle", "inner"}
 
 @pytest.mark.parametrize("saver_name", ["base", "pool", "shallow"])
 def test_null_chars(saver_name: str, test_data) -> None:

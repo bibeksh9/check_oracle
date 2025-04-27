@@ -25,7 +25,10 @@ MIGRATIONS = [
     """CREATE TABLE IF NOT EXISTS checkpoint_migrations (
         v NUMBER PRIMARY KEY
     )""",
-    """CREATE TABLE IF NOT EXISTS checkpoints (
+"""DROP TABLE CHECKPOINTS""",
+"""DROP TABLE CHECKPOINT_BLOBS""",
+"""DROP TABLE CHECKPOINT_WRITES""",    
+"""CREATE TABLE IF NOT EXISTS checkpoints (
         thread_id VARCHAR2(200) NOT NULL,
         checkpoint_ns VARCHAR2(200) DEFAULT '',
         checkpoint_id VARCHAR2(200) NOT NULL,
@@ -311,37 +314,37 @@ class BaseOracleSaver(BaseCheckpointSaver[str]):
         return f"{next_v:032}.{next_h:016}"
 
     def _search_where(
-    self,
-    config: Optional[RunnableConfig],
-    filter: MetadataInput,
-    before: Optional[RunnableConfig] = None,
-) -> tuple[str, list[Any]]:
+        self,
+        config: Optional[RunnableConfig],
+        filter: MetadataInput,
+        before: Optional[RunnableConfig] = None,
+    ) -> tuple[str, list[Any]]:
         wheres = []
         param_values = []
 
-        # construct predicate for config filter
+        # Handle config filters
         if config:
-            wheres.append("thread_id = :{}".format(len(param_values) + 1))
+            wheres.append(f"thread_id = :{len(param_values) + 1}")
             param_values.append(config["configurable"]["thread_id"])
+            
             checkpoint_ns = config["configurable"].get("checkpoint_ns")
             if checkpoint_ns is not None:
-                wheres.append("checkpoint_ns = :{}".format(len(param_values) + 1))
+                wheres.append(f"checkpoint_ns = :{len(param_values) + 1}")
                 param_values.append(checkpoint_ns)
-
+            
             if checkpoint_id := get_checkpoint_id(config):
-                wheres.append("checkpoint_id = :{}".format(len(param_values) + 1))
+                wheres.append(f"checkpoint_id = :{len(param_values) + 1}")
                 param_values.append(checkpoint_id)
 
-        # construct predicate for metadata filter
+        # Handle metadata filters
         if filter:
-            for key, value in filter.items():
-                wheres.append(f"JSON_EXISTS(metadata, '$?(@.{key} == \"{value}\")')")
-                # In Oracle, JSON_EXISTS works directly inside the string, no param binding needed usually
-                # If you want to use bind variables, it will be more complex (and need JSON_EXISTS with variables)
+            for key, value in flatten_metadata_filter(filter).items():
+                wheres.append(f"JSON_VALUE(metadata, '$.{key}') = :{len(param_values) + 1}")
+                param_values.append(str(value))  # always bind as string
 
-        # construct predicate for `before`
+        # Handle 'before'
         if before is not None:
-            wheres.append("checkpoint_id < :{}".format(len(param_values) + 1))
+            wheres.append(f"checkpoint_id < :{len(param_values) + 1}")
             param_values.append(get_checkpoint_id(before))
 
         return (
@@ -349,3 +352,13 @@ class BaseOracleSaver(BaseCheckpointSaver[str]):
             param_values,
         )
 
+def flatten_metadata_filter(d, parent_key='', sep='.'):
+    """Flattens nested dictionaries into JSON paths for Oracle JSON_VALUE queries."""
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_metadata_filter(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)

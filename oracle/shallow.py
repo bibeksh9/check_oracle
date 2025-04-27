@@ -41,6 +41,9 @@ MIGRATIONS = [
     """CREATE TABLE IF NOT EXISTS checkpoint_migrations (
     v NUMBER PRIMARY KEY
 )""",
+"""DROP TABLE CHECKPOINTS""",
+"""DROP TABLE CHECKPOINT_BLOBS""",
+"""DROP TABLE CHECKPOINT_WRITES""",   
     """CREATE TABLE IF NOT EXISTS checkpoints (
         thread_id VARCHAR2(200) NOT NULL,
         checkpoint_ns VARCHAR2(200) DEFAULT '',
@@ -297,8 +300,16 @@ class ShallowOracleSaver(BaseOracleSaver):
         if limit:
             query += f" LIMIT {limit}"
         with self._cursor() as cur:
-            cur.execute(self.SELECT_SQL + where, args, binary=True)
-            for value in cur:
+            cur.execute(self.SELECT_SQL + where, args)
+            rows = cur.fetchall()
+            columns = [col[0].lower() for col in cur.description]
+            values=[]
+            if len(rows) > 0:
+                for row in rows:
+                    converted_row = tuple([json.loads(val.read()) if isinstance(val, oracledb.LOB) else val for val in row])
+                    values.append(converted_row)
+            data_list = [dict(zip(columns, tu)) if values else {} for tu in values] 
+            for value in data_list:
                 checkpoint = self._load_checkpoint(
                     value["checkpoint"],
                     value["channel_values"],
@@ -361,20 +372,10 @@ class ShallowOracleSaver(BaseOracleSaver):
                 args
             )
             columns = [col[0].lower() for col in cur.description]
-            values = cur.fetchall()
-            data_list = [dict(zip(columns,val)) for val in values]
+            rows = cur.fetchall()
+            values=[tuple([json.loads(val.read()) if isinstance(val, oracledb.LOB) else val for row in rows  for val in row])]
+            data_list = [dict(zip(columns, tu)) if values else {} for tu in values] 
             for value in data_list:
-                if value["checkpoint"] and isinstance(value["checkpoint"], oracledb.LOB):
-                    value["checkpoint"] = json.loads(value["checkpoint"].read())
-                if value["channel_values"] and isinstance(value["channel_values"], oracledb.LOB):
-                    value["channel_values"] = json.loads(value["channel_values"].read())
-                if value["pending_sends"] and isinstance(value["pending_sends"], oracledb.LOB):
-                    value["pending_sends"] = json.loads(value["pending_sends"].read())
-                if value["metadata"] and isinstance(value["metadata"], oracledb.LOB):
-                    value["metadata"] = json.loads(value["metadata"].read())
-                if value["pending_writes"] and isinstance(value["pending_writes"], oracledb.LOB):
-                    value["pending_writes"] = json.loads(value["pending_writes"].read())
-                    
                 checkpoint = self._load_checkpoint(
                     value["checkpoint"],
                     value["channel_values"],
@@ -655,7 +656,7 @@ class AsyncShallowOracleSaver(BaseOracleSaver):
         if limit:
             query += f" LIMIT {limit}"
         async with self._cursor() as cur:
-            await cur.execute(self.SELECT_SQL + where, args, binary=True)
+            await cur.execute(self.SELECT_SQL + where, args)
             async for value in cur:
                 checkpoint = await asyncio.to_thread(
                     self._load_checkpoint,
@@ -840,7 +841,7 @@ class AsyncShallowOracleSaver(BaseOracleSaver):
                 # in multiple threads/coroutines, but only one cursor can be
                 # used at a time
                 try:
-                    async with conn.cursor(binary=True, row_factory=dict_row) as cur:
+                    async with conn.cursor(row_factory=dict_row) as cur:
                         yield cur
                 finally:
                     if pipeline:
@@ -852,7 +853,7 @@ class AsyncShallowOracleSaver(BaseOracleSaver):
                     async with (
                         self.lock,
                         conn.pipeline(),
-                        conn.cursor(binary=True, row_factory=dict_row) as cur,
+                        conn.cursor(row_factory=dict_row) as cur,
                     ):
                         yield cur
                 else:
@@ -860,13 +861,13 @@ class AsyncShallowOracleSaver(BaseOracleSaver):
                     async with (
                         self.lock,
                         conn.transaction(),
-                        conn.cursor(binary=True, row_factory=dict_row) as cur,
+                        conn.cursor(row_factory=dict_row) as cur,
                     ):
                         yield cur
             else:
                 async with (
                     self.lock,
-                    conn.cursor(binary=True, row_factory=dict_row),
+                    conn.cursor(row_factory=dict_row),
                 ):
                     yield cur
 

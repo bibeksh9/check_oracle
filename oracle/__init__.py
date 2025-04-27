@@ -72,9 +72,9 @@ class OracleSaver(BaseOracleSaver):
             ):
                 try:
                     cur.execute(migration)
-                    cur.execute(f"INSERT INTO checkpoint_migrations (v) VALUES ({v})")
                 except oracledb.DatabaseError as e:
                     pass
+                cur.execute(f"INSERT INTO checkpoint_migrations (v) VALUES ({v})")
 
     def list(
         self,
@@ -125,7 +125,11 @@ class OracleSaver(BaseOracleSaver):
             cur.execute(query, args)
             columns = [col[0].lower() for col in cur.description]
             rows = cur.fetchall()
-            values=[tuple([json.loads(val.read()) if isinstance(val, oracledb.LOB) else val for row in rows  for val in row])]
+            values=[]
+            if len(rows) > 0:
+                for row in rows:
+                    converted_row = tuple([json.loads(val.read()) if isinstance(val, oracledb.LOB) else val for val in row])
+                    values.append(converted_row)
             data_list = [dict(zip(columns, tu)) if values else {} for tu in values] 
             for value in data_list:
                 yield CheckpointTuple(
@@ -277,6 +281,10 @@ class OracleSaver(BaseOracleSaver):
                     new_versions,
                 ),
             )
+            cur.execute("select * from checkpoint_blobs")
+            rows = cur.fetchall()
+            
+            print(rows)
             cur.execute(
                 self.UPSERT_CHECKPOINTS_SQL,
                 (
