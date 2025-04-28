@@ -163,7 +163,7 @@ class OracleSaver(BaseOracleSaver):
     def get_tuple(self, config: RunnableConfig) -> Optional[CheckpointTuple]:
         thread_id = config["configurable"]["thread_id"]
         checkpoint_id = get_checkpoint_id(config)
-        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "default")
     
         if checkpoint_id:
             args = (
@@ -281,10 +281,6 @@ class OracleSaver(BaseOracleSaver):
                     new_versions,
                 ),
             )
-            cur.execute("select * from checkpoint_blobs")
-            rows = cur.fetchall()
-            
-            print(rows)
             cur.execute(
                 self.UPSERT_CHECKPOINTS_SQL,
                 (

@@ -18,7 +18,6 @@ from langgraph.checkpoint.serde.base import SerializerProtocol
 from oracledb import (
     AsyncConnection, 
     AsyncCursor,
-    AsyncPipeline,
     SessionPool as AsyncConnectionPool
 )
 
@@ -34,7 +33,7 @@ class AsyncOracleSaver:
     def __init__(
         self,
         conn: _ainternal.Conn,
-        pipe: Optional[AsyncPipeline] = None,
+        pipe = None,
         serde: Optional[SerializerProtocol] = None,
     ) -> None:
         # Removed BasePostgresSaver initialization

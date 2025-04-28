@@ -1,3 +1,4 @@
+import ast
 import random
 from collections.abc import Sequence
 from typing import Any, Optional, cast
@@ -21,13 +22,15 @@ MetadataInput = Optional[dict[str, Any]]
 To add a new migration, add a new string to the MIGRATIONS list.
 The position of the migration in the list is the version number.
 """
+# """DROP TABLE CHECKPOINTS""",
+# """DROP TABLE CHECKPOINT_BLOBS""",
+# """DROP TABLE CHECKPOINT_WRITES""",   
+
 MIGRATIONS = [
     """CREATE TABLE IF NOT EXISTS checkpoint_migrations (
         v NUMBER PRIMARY KEY
     )""",
-"""DROP TABLE CHECKPOINTS""",
-"""DROP TABLE CHECKPOINT_BLOBS""",
-"""DROP TABLE CHECKPOINT_WRITES""",    
+ 
 """CREATE TABLE IF NOT EXISTS checkpoints (
         thread_id VARCHAR2(200) NOT NULL,
         checkpoint_ns VARCHAR2(200) DEFAULT '',
@@ -258,11 +261,11 @@ class BaseOracleSaver(BaseCheckpointSaver[str]):
         return (
             [
                 (
-                    tid.decode(),
-                    channel.decode(),
-                    self.serde.loads_typed((t.decode(), v)),
+                    tid,
+                    channel,
+                    self.serde.loads_typed((t, v.encode())),
                 )
-                for tid, channel, t, v in writes
+                for tid, channel, t, v in [tuple(v)for v in ast.literal_eval(writes)]
             ]
             if writes
             else []

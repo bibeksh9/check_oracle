@@ -362,7 +362,7 @@ class ShallowOracleSaver(BaseOracleSaver):
             CheckpointTuple(...)
         """  # noqa
         thread_id = config["configurable"]["thread_id"]
-        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "default")
         args = (thread_id, checkpoint_ns)
         where = "WHERE thread_id = :1 AND checkpoint_ns = :2"
 
@@ -692,7 +692,7 @@ class AsyncShallowOracleSaver(BaseOracleSaver):
             Optional[CheckpointTuple]: The retrieved checkpoint tuple, or None if no matching checkpoint was found.
         """
         thread_id = config["configurable"]["thread_id"]
-        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "default")
         args = (thread_id, checkpoint_ns)
         where = "WHERE thread_id = :1 AND checkpoint_ns = :2"
 
